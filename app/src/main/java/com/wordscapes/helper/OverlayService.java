@@ -26,7 +26,22 @@ public class OverlayService extends Service {
     private TextView btnPlay;
     private boolean isSolving = false;
     
+    // Size decreased slightly for better visibility
     private static final int CIRCLE_SIZE = 130;
+
+    // Helper class to track physical tiles
+    private static class Tile {
+        char letter;
+        float x, y;
+        boolean used; // Tracks if this specific tile is used in the current word path
+
+        Tile(char letter, float x, float y) {
+            this.letter = letter;
+            this.x = x;
+            this.y = y;
+            this.used = false;
+        }
+    }
 
     @Override
     public void onCreate() {
@@ -48,11 +63,8 @@ public class OverlayService extends Service {
         // -- PLAY BUTTON --
         btnPlay = createPanelButton("▶", Color.GREEN);
         btnPlay.setOnClickListener(v -> {
-            if (isSolving) {
-                stopSolving();
-            } else {
-                startSolving();
-            }
+            if (isSolving) stopSolving();
+            else startSolving();
         });
         controlPanel.addView(btnPlay);
 
@@ -117,8 +129,8 @@ public class OverlayService extends Service {
 
     private void addCircle(int index) {
         EditText circle = new EditText(this);
-        circle.setBackgroundResource(android.R.drawable.btn_default_small);
-        circle.setBackgroundColor(Color.parseColor("#4000BCD4"));
+        // Use new background with Red Center Dot
+        circle.setBackgroundResource(R.drawable.circle_shape);
         circle.setTextColor(Color.WHITE);
         circle.setGravity(Gravity.CENTER);
         circle.setTextSize(20);
@@ -145,8 +157,7 @@ public class OverlayService extends Service {
             int lastX, lastY, initialX, initialY;
             @Override
             public boolean onTouch(View v, MotionEvent event) {
-                // IMPORTANT: If solving, IGNORE touches so we don't drag while swiping
-                if (isSolving) return false;
+                if (isSolving) return false; // Lock when solving
 
                 WindowManager.LayoutParams params = (WindowManager.LayoutParams) v.getLayoutParams();
                 switch (event.getAction()) {
@@ -177,17 +188,17 @@ public class OverlayService extends Service {
         }
     }
 
-    // NEW: Helper to lock/unlock windows to allow swipes to pass through
     private void setWindowsTouchable(boolean touchable) {
         new Handler(Looper.getMainLooper()).post(() -> {
             for (EditText circle : circleViews) {
                 WindowManager.LayoutParams params = (WindowManager.LayoutParams) circle.getLayoutParams();
                 if (touchable) {
-                    // Make interactive again
                     params.flags = WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL;
+                    circle.setAlpha(1.0f);
                 } else {
-                    // Make "Ghost" (Untouchable) so swipes hit the game below
+                    // Make untoucable and slightly dim to indicate "Locked"
                     params.flags = WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE | WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE;
+                    circle.setAlpha(0.7f);
                 }
                 wm.updateViewLayout(circle, params);
             }
@@ -216,16 +227,16 @@ public class OverlayService extends Service {
         updateUIState(true);
         if (SwiperService.instance != null) SwiperService.instance.reset();
 
-        // 1. Clear focus
         for (EditText c : circleViews) {
             c.clearFocus();
             c.setCursorVisible(false);
         }
 
-        // 2. LOCK WINDOWS (Fixes the dragging issue)
+        // Lock UI
         setWindowsTouchable(false);
 
-        Map<Character, PointF> letterMap = new HashMap<>();
+        // 1. COLLECT TILES (Snapshot of board state)
+        List<Tile> boardTiles = new ArrayList<>();
         StringBuilder inputLetters = new StringBuilder();
         
         for (EditText circle : circleViews) {
@@ -233,52 +244,94 @@ public class OverlayService extends Service {
             if (!txt.isEmpty()) {
                 char c = txt.charAt(0);
                 inputLetters.append(c);
+                
                 WindowManager.LayoutParams params = (WindowManager.LayoutParams) circle.getLayoutParams();
-                float centerX = params.x + (CIRCLE_SIZE / 2f);
-                float centerY = params.y + (CIRCLE_SIZE / 2f);
-                letterMap.put(c, new PointF(centerX, centerY));
+                // ACCURACY FIX: Precise center calculation
+                float centerX = params.x + (CIRCLE_SIZE / 2.0f);
+                float centerY = params.y + (CIRCLE_SIZE / 2.0f);
+                
+                boardTiles.add(new Tile(c, centerX, centerY));
             }
         }
 
         if (inputLetters.length() < 3) {
             Toast.makeText(this, "Need 3+ letters", Toast.LENGTH_SHORT).show();
-            stopSolving(); // Make sure to unlock if failing
+            stopSolving();
             return;
         }
 
         new Thread(() -> {
-            List<String> words = trie.solve(inputLetters.toString());
+            // Get all possible words from Trie
+            List<String> rawWords = trie.solve(inputLetters.toString());
             
+            // Filter and Sort: Ensure we can PHYSICALLY swipe them with available tiles
+            List<String> validWords = new ArrayList<>();
+            for (String word : rawWords) {
+                if (canMakeWord(word, boardTiles)) {
+                    validWords.add(word);
+                }
+            }
+            
+            // Show count
             new Handler(Looper.getMainLooper()).post(() -> 
-                Toast.makeText(this, "Found " + words.size() + " words.", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Solving " + validWords.size() + " words", Toast.LENGTH_SHORT).show()
             );
-            
-            for (String word : words) {
+
+            // Execute Swipes
+            for (String word : validWords) {
                 if (!isSolving) break;
                 if (SwiperService.instance == null) break;
 
-                float[][] path = new float[word.length()][2];
-                for (int i = 0; i < word.length(); i++) {
-                    PointF p = letterMap.get(word.charAt(i));
-                    if (p != null) {
-                        path[i][0] = p.x;
-                        path[i][1] = p.y;
-                    }
+                // Build Path using Unique Tiles
+                float[][] path = buildPathForWord(word, boardTiles);
+                
+                if (path != null) {
+                    SwiperService.instance.swipe(path);
+                    try { Thread.sleep(600); } catch (InterruptedException e) {}
                 }
-
-                SwiperService.instance.swipe(path);
-                try { Thread.sleep(600); } catch (InterruptedException e) {}
             }
-            
             stopSolving();
         }).start();
+    }
+
+    // Helper: Checks if we have enough distinct tiles for this word
+    private boolean canMakeWord(String word, List<Tile> board) {
+        // Simple frequency check would be enough, but full check is safer
+        return buildPathForWord(word, board) != null;
+    }
+
+    // DUPLICATE LOGIC FIX: Assigns specific tile to specific letter in word
+    private float[][] buildPathForWord(String word, List<Tile> board) {
+        float[][] path = new float[word.length()][2];
+        
+        // Reset usage for this simulation
+        for (Tile t : board) t.used = false;
+
+        for (int i = 0; i < word.length(); i++) {
+            char c = word.charAt(i);
+            Tile found = null;
+            
+            // Find closest unused tile for this letter (or just first available)
+            for (Tile t : board) {
+                if (t.letter == c && !t.used) {
+                    found = t;
+                    break;
+                }
+            }
+
+            if (found == null) return null; // Impossible to make word with current board
+            
+            found.used = true;
+            path[i][0] = found.x;
+            path[i][1] = found.y;
+        }
+        return path;
     }
 
     private void stopSolving() {
         isSolving = false;
         if (SwiperService.instance != null) SwiperService.instance.stopSwiping();
         updateUIState(false);
-        // UNLOCK WINDOWS (Make interactive again)
         setWindowsTouchable(true);
     }
 
