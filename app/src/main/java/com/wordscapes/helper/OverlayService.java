@@ -13,7 +13,6 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
 import android.widget.EditText;
-import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -21,10 +20,9 @@ import java.util.*;
 
 public class OverlayService extends Service {
     private WindowManager wm;
-    private FrameLayout circlesContainer; // Holds the circles
-    private LinearLayout controlPanel;    // The sidebar
+    private LinearLayout controlPanel;
     private Trie trie;
-    private final List<EditText> circles = new ArrayList<>();
+    private final List<View> circleViews = new ArrayList<>(); // Track the views
     private boolean isSolving = false;
     
     // Settings
@@ -37,21 +35,10 @@ public class OverlayService extends Service {
         trie = new Trie();
         new Thread(() -> trie.loadDictionary(this)).start();
 
-        // 1. Layer for Circles (Fullscreen, transparent)
-        WindowManager.LayoutParams containerParams = new WindowManager.LayoutParams(
-            WindowManager.LayoutParams.MATCH_PARENT,
-            WindowManager.LayoutParams.MATCH_PARENT,
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL, // Passes touches through empty space
-            PixelFormat.TRANSLUCENT);
-        
-        circlesContainer = new FrameLayout(this);
-        wm.addView(circlesContainer, containerParams);
-
-        // 2. Layer for Control Panel (Small, floating sidebar)
+        // 1. Create the Sidebar (Control Panel)
         createControlPanel();
 
-        // 3. Start with 6 circles by default
+        // 2. Start with 6 circles (Added individually now)
         for(int i=0; i<6; i++) addCircle(i);
     }
 
@@ -70,7 +57,7 @@ public class OverlayService extends Service {
                 btnPlay.setTextColor(Color.GREEN);
             } else {
                 startSolving();
-                btnPlay.setText("■"); // Square for stop
+                btnPlay.setText("■");
                 btnPlay.setTextColor(Color.RED);
             }
         });
@@ -78,7 +65,7 @@ public class OverlayService extends Service {
 
         // -- ADD BUTTON --
         TextView btnAdd = createPanelButton("➕", Color.WHITE);
-        btnAdd.setOnClickListener(v -> addCircle(circles.size()));
+        btnAdd.setOnClickListener(v -> addCircle(circleViews.size()));
         controlPanel.addView(btnAdd);
 
         // -- REMOVE BUTTON --
@@ -88,7 +75,6 @@ public class OverlayService extends Service {
 
         // -- MOVE HANDLE --
         TextView btnMove = createPanelButton("✥", Color.CYAN);
-        // Logic to drag the panel itself
         btnMove.setOnTouchListener(new View.OnTouchListener() {
             int lastX, lastY, initialX, initialY;
             @Override
@@ -112,12 +98,12 @@ public class OverlayService extends Service {
         });
         controlPanel.addView(btnMove);
 
-        // Add Panel to Window
+        // Add Panel as its own small window
         WindowManager.LayoutParams panelParams = new WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE, // Panel doesn't need keyboard focus
             PixelFormat.TRANSLUCENT);
         
         panelParams.gravity = Gravity.TOP | Gravity.START;
@@ -146,45 +132,50 @@ public class OverlayService extends Service {
         circle.setTextSize(20);
         circle.setFilters(new android.text.InputFilter[] { new android.text.InputFilter.LengthFilter(1) });
         
-        // Initial Staggered Position
-        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(CIRCLE_SIZE, CIRCLE_SIZE);
-        lp.leftMargin = 300 + (index % 3 * 150); 
-        lp.topMargin = 500 + (index / 3 * 150);
-        circle.setLayoutParams(lp);
+        // KEY CHANGE: Each circle is its own independent window
+        WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
+            CIRCLE_SIZE, 
+            CIRCLE_SIZE,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            // FLAG_NOT_TOUCH_MODAL allows touches OUTSIDE this tiny circle to pass to the game
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL, 
+            PixelFormat.TRANSLUCENT);
 
-        // Drag Listener for Circle
+        lp.gravity = Gravity.TOP | Gravity.START;
+        lp.x = 300 + (index % 3 * 150); 
+        lp.y = 500 + (index / 3 * 150);
+
+        // Drag Listener updates the Window Layout directly
         circle.setOnTouchListener(new View.OnTouchListener() {
             int lastX, lastY, initialX, initialY;
             @Override
             public boolean onTouch(View v, MotionEvent event) {
+                WindowManager.LayoutParams params = (WindowManager.LayoutParams) v.getLayoutParams();
                 switch (event.getAction()) {
                     case MotionEvent.ACTION_DOWN:
                         lastX = (int) event.getRawX();
                         lastY = (int) event.getRawY();
-                        initialX = ((FrameLayout.LayoutParams) v.getLayoutParams()).leftMargin;
-                        initialY = ((FrameLayout.LayoutParams) v.getLayoutParams()).topMargin;
+                        initialX = params.x;
+                        initialY = params.y;
                         return false; 
                     case MotionEvent.ACTION_MOVE:
-                        int dx = (int) event.getRawX() - lastX;
-                        int dy = (int) event.getRawY() - lastY;
-                        FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) v.getLayoutParams();
-                        params.leftMargin = initialX + dx;
-                        params.topMargin = initialY + dy;
-                        v.setLayoutParams(params);
+                        params.x = initialX + ((int) event.getRawX() - lastX);
+                        params.y = initialY + ((int) event.getRawY() - lastY);
+                        wm.updateViewLayout(v, params);
                         return true;
                 }
                 return false;
             }
         });
 
-        circles.add(circle);
-        circlesContainer.addView(circle);
+        circleViews.add(circle);
+        wm.addView(circle, lp);
     }
 
     private void removeLastCircle() {
-        if (!circles.isEmpty()) {
-            View v = circles.remove(circles.size() - 1);
-            circlesContainer.removeView(v);
+        if (!circleViews.isEmpty()) {
+            View v = circleViews.remove(circleViews.size() - 1);
+            wm.removeView(v);
         }
     }
 
@@ -192,18 +183,22 @@ public class OverlayService extends Service {
         isSolving = true;
         if (SwiperService.instance != null) SwiperService.instance.reset();
 
-        // Map Letters
         Map<Character, PointF> letterMap = new HashMap<>();
         StringBuilder inputLetters = new StringBuilder();
         
-        for (EditText circle : circles) {
+        for (View v : circleViews) {
+            EditText circle = (EditText) v;
             String txt = circle.getText().toString().toUpperCase();
             if (!txt.isEmpty()) {
                 char c = txt.charAt(0);
                 inputLetters.append(c);
-                int[] location = new int[2];
-                circle.getLocationOnScreen(location);
-                letterMap.put(c, new PointF(location[0] + (CIRCLE_SIZE/2f), location[1] + (CIRCLE_SIZE/2f)));
+                
+                // Get absolute screen position
+                WindowManager.LayoutParams params = (WindowManager.LayoutParams) v.getLayoutParams();
+                // Add half width/height to get center
+                float centerX = params.x + (CIRCLE_SIZE / 2f);
+                float centerY = params.y + (CIRCLE_SIZE / 2f);
+                letterMap.put(c, new PointF(centerX, centerY));
             }
         }
 
@@ -213,30 +208,26 @@ public class OverlayService extends Service {
             return;
         }
 
-        // Solve and Swipe
         new Thread(() -> {
             List<String> words = trie.solve(inputLetters.toString());
             
             for (String word : words) {
-                if (!isSolving) break; // User pressed stop
+                if (!isSolving) break;
                 if (SwiperService.instance == null) break;
 
                 float[][] path = new float[word.length()][2];
                 for (int i = 0; i < word.length(); i++) {
                     PointF p = letterMap.get(word.charAt(i));
-                    path[i][0] = p.x;
-                    path[i][1] = p.y;
+                    if (p != null) {
+                        path[i][0] = p.x;
+                        path[i][1] = p.y;
+                    }
                 }
 
                 SwiperService.instance.swipe(path);
                 try { Thread.sleep(600); } catch (InterruptedException e) {}
             }
-            
-            // Finished
             isSolving = false;
-            new Handler(Looper.getMainLooper()).post(() -> {
-               // Update UI if needed
-            });
         }).start();
     }
 
@@ -249,7 +240,10 @@ public class OverlayService extends Service {
     @Override
     public void onDestroy() {
         super.onDestroy();
-        if (circlesContainer != null) wm.removeView(circlesContainer);
+        // Remove all windows
+        for (View v : circleViews) {
+            wm.removeView(v);
+        }
         if (controlPanel != null) wm.removeView(controlPanel);
     }
 
