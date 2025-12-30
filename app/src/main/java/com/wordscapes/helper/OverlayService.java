@@ -22,10 +22,10 @@ public class OverlayService extends Service {
     private WindowManager wm;
     private LinearLayout controlPanel;
     private Trie trie;
-    private final List<View> circleViews = new ArrayList<>(); // Track the views
+    private final List<EditText> circleViews = new ArrayList<>();
+    private TextView btnPlay; // Keep a reference to update it later
     private boolean isSolving = false;
     
-    // Settings
     private static final int CIRCLE_SIZE = 130;
 
     @Override
@@ -35,30 +35,23 @@ public class OverlayService extends Service {
         trie = new Trie();
         new Thread(() -> trie.loadDictionary(this)).start();
 
-        // 1. Create the Sidebar (Control Panel)
         createControlPanel();
-
-        // 2. Start with 6 circles (Added individually now)
         for(int i=0; i<6; i++) addCircle(i);
     }
 
     private void createControlPanel() {
         controlPanel = new LinearLayout(this);
         controlPanel.setOrientation(LinearLayout.VERTICAL);
-        controlPanel.setBackgroundColor(Color.parseColor("#EE222222")); // Dark BG
+        controlPanel.setBackgroundColor(Color.parseColor("#EE222222"));
         controlPanel.setPadding(10, 20, 10, 20);
 
         // -- PLAY BUTTON --
-        TextView btnPlay = createPanelButton("▶", Color.GREEN);
+        btnPlay = createPanelButton("▶", Color.GREEN);
         btnPlay.setOnClickListener(v -> {
             if (isSolving) {
                 stopSolving();
-                btnPlay.setText("▶");
-                btnPlay.setTextColor(Color.GREEN);
             } else {
                 startSolving();
-                btnPlay.setText("■");
-                btnPlay.setTextColor(Color.RED);
             }
         });
         controlPanel.addView(btnPlay);
@@ -98,12 +91,11 @@ public class OverlayService extends Service {
         });
         controlPanel.addView(btnMove);
 
-        // Add Panel as its own small window
         WindowManager.LayoutParams panelParams = new WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE, // Panel doesn't need keyboard focus
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
             PixelFormat.TRANSLUCENT);
         
         panelParams.gravity = Gravity.TOP | Gravity.START;
@@ -126,18 +118,27 @@ public class OverlayService extends Service {
     private void addCircle(int index) {
         EditText circle = new EditText(this);
         circle.setBackgroundResource(android.R.drawable.btn_default_small);
-        circle.setBackgroundColor(Color.parseColor("#4000BCD4")); // Transparent Cyan
+        circle.setBackgroundColor(Color.parseColor("#4000BCD4"));
         circle.setTextColor(Color.WHITE);
         circle.setGravity(Gravity.CENTER);
         circle.setTextSize(20);
         circle.setFilters(new android.text.InputFilter[] { new android.text.InputFilter.LengthFilter(1) });
+        circle.setSingleLine(true);
         
-        // KEY CHANGE: Each circle is its own independent window
+        // FIX 1: Hide blinking cursor when not focused
+        circle.setCursorVisible(false);
+        circle.setOnClickListener(v -> circle.setCursorVisible(true));
+        circle.setOnFocusChangeListener((v, hasFocus) -> {
+            circle.setCursorVisible(hasFocus);
+            if (!hasFocus) {
+                 // Optional: hide keyboard here if you want
+            }
+        });
+
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
             CIRCLE_SIZE, 
             CIRCLE_SIZE,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            // FLAG_NOT_TOUCH_MODAL allows touches OUTSIDE this tiny circle to pass to the game
             WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL, 
             PixelFormat.TRANSLUCENT);
 
@@ -145,7 +146,6 @@ public class OverlayService extends Service {
         lp.x = 300 + (index % 3 * 150); 
         lp.y = 500 + (index / 3 * 150);
 
-        // Drag Listener updates the Window Layout directly
         circle.setOnTouchListener(new View.OnTouchListener() {
             int lastX, lastY, initialX, initialY;
             @Override
@@ -174,28 +174,51 @@ public class OverlayService extends Service {
 
     private void removeLastCircle() {
         if (!circleViews.isEmpty()) {
-            View v = circleViews.remove(circleViews.size() - 1);
+            EditText v = circleViews.remove(circleViews.size() - 1);
             wm.removeView(v);
         }
     }
 
+    private void updateUIState(boolean solving) {
+        new Handler(Looper.getMainLooper()).post(() -> {
+            if (solving) {
+                btnPlay.setText("■");
+                btnPlay.setTextColor(Color.RED);
+            } else {
+                btnPlay.setText("▶");
+                btnPlay.setTextColor(Color.GREEN);
+            }
+        });
+    }
+
     private void startSolving() {
+        // FIX 3: Check if Swiper is actually ready
+        if (SwiperService.instance == null) {
+            Toast.makeText(this, "Swipe Service NOT Ready! Check Accessibility Settings.", Toast.LENGTH_LONG).show();
+            return;
+        }
+
         isSolving = true;
+        updateUIState(true);
+
         if (SwiperService.instance != null) SwiperService.instance.reset();
+
+        // FIX 2: Clear focus to stop blinking
+        for (EditText c : circleViews) {
+            c.clearFocus();
+            c.setCursorVisible(false);
+        }
 
         Map<Character, PointF> letterMap = new HashMap<>();
         StringBuilder inputLetters = new StringBuilder();
         
-        for (View v : circleViews) {
-            EditText circle = (EditText) v;
+        for (EditText circle : circleViews) {
             String txt = circle.getText().toString().toUpperCase();
             if (!txt.isEmpty()) {
                 char c = txt.charAt(0);
                 inputLetters.append(c);
                 
-                // Get absolute screen position
-                WindowManager.LayoutParams params = (WindowManager.LayoutParams) v.getLayoutParams();
-                // Add half width/height to get center
+                WindowManager.LayoutParams params = (WindowManager.LayoutParams) circle.getLayoutParams();
                 float centerX = params.x + (CIRCLE_SIZE / 2f);
                 float centerY = params.y + (CIRCLE_SIZE / 2f);
                 letterMap.put(c, new PointF(centerX, centerY));
@@ -203,13 +226,19 @@ public class OverlayService extends Service {
         }
 
         if (inputLetters.length() < 3) {
-            Toast.makeText(this, "Need at least 3 letters", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "Need 3+ letters", Toast.LENGTH_SHORT).show();
             isSolving = false;
+            updateUIState(false);
             return;
         }
 
         new Thread(() -> {
             List<String> words = trie.solve(inputLetters.toString());
+            
+            // Show toast to confirm dictionary works
+            new Handler(Looper.getMainLooper()).post(() -> 
+                Toast.makeText(this, "Found " + words.size() + " words. Swiping...", Toast.LENGTH_SHORT).show()
+            );
             
             for (String word : words) {
                 if (!isSolving) break;
@@ -225,25 +254,26 @@ public class OverlayService extends Service {
                 }
 
                 SwiperService.instance.swipe(path);
-                try { Thread.sleep(600); } catch (InterruptedException e) {}
+                try { Thread.sleep(800); } catch (InterruptedException e) {} // Slower for reliability
             }
+            
+            // Done loop
             isSolving = false;
+            updateUIState(false);
         }).start();
     }
 
     private void stopSolving() {
         isSolving = false;
         if (SwiperService.instance != null) SwiperService.instance.stopSwiping();
+        updateUIState(false);
         Toast.makeText(this, "Stopped", Toast.LENGTH_SHORT).show();
     }
 
     @Override
     public void onDestroy() {
         super.onDestroy();
-        // Remove all windows
-        for (View v : circleViews) {
-            wm.removeView(v);
-        }
+        for (View v : circleViews) wm.removeView(v);
         if (controlPanel != null) wm.removeView(controlPanel);
     }
 
