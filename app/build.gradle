@@ -1,7 +1,11 @@
-plugins { id 'com.android.application' }
+plugins {
+    id 'com.android.application'
+}
+
 android {
     namespace 'com.wordscapes.helper'
     compileSdk 34
+
     defaultConfig {
         applicationId "com.wordscapes.helper"
         minSdk 24
