@@ -226,12 +226,15 @@ public class OverlayService extends Service {
             if (!txt.isEmpty()) {
                 char c = txt.charAt(0);
                 inputLetters.append(c);
-                WindowManager.LayoutParams params = (WindowManager.LayoutParams) circle.getLayoutParams();
                 
-                // SUPER ACCURATE CENTER CALCULATION
-                // We add exactly half the circle size to X and Y
-                float centerX = params.x + (CIRCLE_SIZE / 2.0f);
-                float centerY = params.y + (CIRCLE_SIZE / 2.0f);
+                // ACCURACY FIX: Use Absolute Screen Coordinates instead of Window Layout Params
+                int[] screenLocation = new int[2];
+                circle.getLocationOnScreen(screenLocation);
+                
+                // Calculate TRUE CENTER including Status Bar offsets
+                float centerX = screenLocation[0] + (circle.getWidth() / 2.0f);
+                float centerY = screenLocation[1] + (circle.getHeight() / 2.0f);
+                
                 boardTiles.add(new Tile(c, centerX, centerY));
             }
         }
@@ -258,7 +261,13 @@ public class OverlayService extends Service {
                 float[][] path = buildPathForWord(word, boardTiles);
                 if (path != null) {
                     SwiperService.instance.swipe(path);
-                    try { Thread.sleep(600); } catch (InterruptedException e) {}
+                    
+                    // SMART DELAY LOGIC:
+                    // 1. Calculate how long the swipe technically takes (100ms per letter)
+                    long gestureDuration = Math.max(200, word.length() * 100);
+                    
+                    // 2. Wait for gesture to finish + User Requested 300ms Delay
+                    try { Thread.sleep(gestureDuration + 300); } catch (InterruptedException e) {}
                 }
             }
             stopSolving();
@@ -275,7 +284,6 @@ public class OverlayService extends Service {
         for (int i = 0; i < word.length(); i++) {
             char c = word.charAt(i);
             Tile found = null;
-            // Find closest unused tile (Euclidean distance could be added here for even more precision if needed)
             for (Tile t : board) {
                 if (t.letter == c && !t.used) {
                     found = t;
