@@ -26,15 +26,12 @@ public class OverlayService extends Service {
     private TextView btnPlay;
     private boolean isSolving = false;
     
-    // Size decreased slightly for better visibility
     private static final int CIRCLE_SIZE = 130;
 
-    // Helper class to track physical tiles
     private static class Tile {
         char letter;
         float x, y;
-        boolean used; // Tracks if this specific tile is used in the current word path
-
+        boolean used;
         Tile(char letter, float x, float y) {
             this.letter = letter;
             this.x = x;
@@ -49,7 +46,6 @@ public class OverlayService extends Service {
         wm = (WindowManager) getSystemService(WINDOW_SERVICE);
         trie = new Trie();
         new Thread(() -> trie.loadDictionary(this)).start();
-
         createControlPanel();
         for(int i=0; i<6; i++) addCircle(i);
     }
@@ -60,7 +56,6 @@ public class OverlayService extends Service {
         controlPanel.setBackgroundColor(Color.parseColor("#EE222222"));
         controlPanel.setPadding(10, 20, 10, 20);
 
-        // -- PLAY BUTTON --
         btnPlay = createPanelButton("▶", Color.GREEN);
         btnPlay.setOnClickListener(v -> {
             if (isSolving) stopSolving();
@@ -68,17 +63,14 @@ public class OverlayService extends Service {
         });
         controlPanel.addView(btnPlay);
 
-        // -- ADD BUTTON --
         TextView btnAdd = createPanelButton("➕", Color.WHITE);
         btnAdd.setOnClickListener(v -> addCircle(circleViews.size()));
         controlPanel.addView(btnAdd);
 
-        // -- REMOVE BUTTON --
         TextView btnSub = createPanelButton("➖", Color.WHITE);
         btnSub.setOnClickListener(v -> removeLastCircle());
         controlPanel.addView(btnSub);
 
-        // -- MOVE HANDLE --
         TextView btnMove = createPanelButton("✥", Color.CYAN);
         btnMove.setOnTouchListener(new View.OnTouchListener() {
             int lastX, lastY, initialX, initialY;
@@ -113,7 +105,6 @@ public class OverlayService extends Service {
         panelParams.gravity = Gravity.TOP | Gravity.START;
         panelParams.x = 0;
         panelParams.y = 300;
-        
         wm.addView(controlPanel, panelParams);
     }
 
@@ -129,7 +120,6 @@ public class OverlayService extends Service {
 
     private void addCircle(int index) {
         EditText circle = new EditText(this);
-        // Use new background with Red Center Dot
         circle.setBackgroundResource(R.drawable.circle_shape);
         circle.setTextColor(Color.WHITE);
         circle.setGravity(Gravity.CENTER);
@@ -137,13 +127,11 @@ public class OverlayService extends Service {
         circle.setFilters(new android.text.InputFilter[] { new android.text.InputFilter.LengthFilter(1) });
         circle.setSingleLine(true);
         circle.setCursorVisible(false);
-        
         circle.setOnClickListener(v -> circle.setCursorVisible(true));
         circle.setOnFocusChangeListener((v, hasFocus) -> circle.setCursorVisible(hasFocus));
 
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
-            CIRCLE_SIZE, 
-            CIRCLE_SIZE,
+            CIRCLE_SIZE, CIRCLE_SIZE,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL, 
             PixelFormat.TRANSLUCENT);
@@ -152,13 +140,11 @@ public class OverlayService extends Service {
         lp.x = 300 + (index % 3 * 150); 
         lp.y = 500 + (index / 3 * 150);
 
-        // Drag Listener
         circle.setOnTouchListener(new View.OnTouchListener() {
             int lastX, lastY, initialX, initialY;
             @Override
             public boolean onTouch(View v, MotionEvent event) {
-                if (isSolving) return false; // Lock when solving
-
+                if (isSolving) return false;
                 WindowManager.LayoutParams params = (WindowManager.LayoutParams) v.getLayoutParams();
                 switch (event.getAction()) {
                     case MotionEvent.ACTION_DOWN:
@@ -196,7 +182,6 @@ public class OverlayService extends Service {
                     params.flags = WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL;
                     circle.setAlpha(1.0f);
                 } else {
-                    // Make untoucable and slightly dim to indicate "Locked"
                     params.flags = WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE | WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE;
                     circle.setAlpha(0.7f);
                 }
@@ -225,17 +210,14 @@ public class OverlayService extends Service {
 
         isSolving = true;
         updateUIState(true);
-        if (SwiperService.instance != null) SwiperService.instance.reset();
+        SwiperService.instance.reset();
 
         for (EditText c : circleViews) {
             c.clearFocus();
             c.setCursorVisible(false);
         }
-
-        // Lock UI
         setWindowsTouchable(false);
 
-        // 1. COLLECT TILES (Snapshot of board state)
         List<Tile> boardTiles = new ArrayList<>();
         StringBuilder inputLetters = new StringBuilder();
         
@@ -244,12 +226,12 @@ public class OverlayService extends Service {
             if (!txt.isEmpty()) {
                 char c = txt.charAt(0);
                 inputLetters.append(c);
-                
                 WindowManager.LayoutParams params = (WindowManager.LayoutParams) circle.getLayoutParams();
-                // ACCURACY FIX: Precise center calculation
+                
+                // SUPER ACCURATE CENTER CALCULATION
+                // We add exactly half the circle size to X and Y
                 float centerX = params.x + (CIRCLE_SIZE / 2.0f);
                 float centerY = params.y + (CIRCLE_SIZE / 2.0f);
-                
                 boardTiles.add(new Tile(c, centerX, centerY));
             }
         }
@@ -261,30 +243,19 @@ public class OverlayService extends Service {
         }
 
         new Thread(() -> {
-            // Get all possible words from Trie
             List<String> rawWords = trie.solve(inputLetters.toString());
-            
-            // Filter and Sort: Ensure we can PHYSICALLY swipe them with available tiles
             List<String> validWords = new ArrayList<>();
             for (String word : rawWords) {
-                if (canMakeWord(word, boardTiles)) {
-                    validWords.add(word);
-                }
+                if (canMakeWord(word, boardTiles)) validWords.add(word);
             }
             
-            // Show count
             new Handler(Looper.getMainLooper()).post(() -> 
                 Toast.makeText(this, "Solving " + validWords.size() + " words", Toast.LENGTH_SHORT).show()
             );
 
-            // Execute Swipes
             for (String word : validWords) {
                 if (!isSolving) break;
-                if (SwiperService.instance == null) break;
-
-                // Build Path using Unique Tiles
                 float[][] path = buildPathForWord(word, boardTiles);
-                
                 if (path != null) {
                     SwiperService.instance.swipe(path);
                     try { Thread.sleep(600); } catch (InterruptedException e) {}
@@ -294,33 +265,24 @@ public class OverlayService extends Service {
         }).start();
     }
 
-    // Helper: Checks if we have enough distinct tiles for this word
     private boolean canMakeWord(String word, List<Tile> board) {
-        // Simple frequency check would be enough, but full check is safer
         return buildPathForWord(word, board) != null;
     }
 
-    // DUPLICATE LOGIC FIX: Assigns specific tile to specific letter in word
     private float[][] buildPathForWord(String word, List<Tile> board) {
         float[][] path = new float[word.length()][2];
-        
-        // Reset usage for this simulation
         for (Tile t : board) t.used = false;
-
         for (int i = 0; i < word.length(); i++) {
             char c = word.charAt(i);
             Tile found = null;
-            
-            // Find closest unused tile for this letter (or just first available)
+            // Find closest unused tile (Euclidean distance could be added here for even more precision if needed)
             for (Tile t : board) {
                 if (t.letter == c && !t.used) {
                     found = t;
                     break;
                 }
             }
-
-            if (found == null) return null; // Impossible to make word with current board
-            
+            if (found == null) return null;
             found.used = true;
             path[i][0] = found.x;
             path[i][1] = found.y;
