@@ -23,7 +23,7 @@ public class OverlayService extends Service {
     private LinearLayout controlPanel;
     private Trie trie;
     private final List<EditText> circleViews = new ArrayList<>();
-    private TextView btnPlay; // Keep a reference to update it later
+    private TextView btnPlay;
     private boolean isSolving = false;
     
     private static final int CIRCLE_SIZE = 130;
@@ -124,16 +124,10 @@ public class OverlayService extends Service {
         circle.setTextSize(20);
         circle.setFilters(new android.text.InputFilter[] { new android.text.InputFilter.LengthFilter(1) });
         circle.setSingleLine(true);
-        
-        // FIX 1: Hide blinking cursor when not focused
         circle.setCursorVisible(false);
+        
         circle.setOnClickListener(v -> circle.setCursorVisible(true));
-        circle.setOnFocusChangeListener((v, hasFocus) -> {
-            circle.setCursorVisible(hasFocus);
-            if (!hasFocus) {
-                 // Optional: hide keyboard here if you want
-            }
-        });
+        circle.setOnFocusChangeListener((v, hasFocus) -> circle.setCursorVisible(hasFocus));
 
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
             CIRCLE_SIZE, 
@@ -146,10 +140,14 @@ public class OverlayService extends Service {
         lp.x = 300 + (index % 3 * 150); 
         lp.y = 500 + (index / 3 * 150);
 
+        // Drag Listener
         circle.setOnTouchListener(new View.OnTouchListener() {
             int lastX, lastY, initialX, initialY;
             @Override
             public boolean onTouch(View v, MotionEvent event) {
+                // IMPORTANT: If solving, IGNORE touches so we don't drag while swiping
+                if (isSolving) return false;
+
                 WindowManager.LayoutParams params = (WindowManager.LayoutParams) v.getLayoutParams();
                 switch (event.getAction()) {
                     case MotionEvent.ACTION_DOWN:
@@ -179,6 +177,23 @@ public class OverlayService extends Service {
         }
     }
 
+    // NEW: Helper to lock/unlock windows to allow swipes to pass through
+    private void setWindowsTouchable(boolean touchable) {
+        new Handler(Looper.getMainLooper()).post(() -> {
+            for (EditText circle : circleViews) {
+                WindowManager.LayoutParams params = (WindowManager.LayoutParams) circle.getLayoutParams();
+                if (touchable) {
+                    // Make interactive again
+                    params.flags = WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL;
+                } else {
+                    // Make "Ghost" (Untouchable) so swipes hit the game below
+                    params.flags = WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE | WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE;
+                }
+                wm.updateViewLayout(circle, params);
+            }
+        });
+    }
+
     private void updateUIState(boolean solving) {
         new Handler(Looper.getMainLooper()).post(() -> {
             if (solving) {
@@ -192,22 +207,23 @@ public class OverlayService extends Service {
     }
 
     private void startSolving() {
-        // FIX 3: Check if Swiper is actually ready
         if (SwiperService.instance == null) {
-            Toast.makeText(this, "Swipe Service NOT Ready! Check Accessibility Settings.", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "Swipe Service NOT Ready!", Toast.LENGTH_LONG).show();
             return;
         }
 
         isSolving = true;
         updateUIState(true);
-
         if (SwiperService.instance != null) SwiperService.instance.reset();
 
-        // FIX 2: Clear focus to stop blinking
+        // 1. Clear focus
         for (EditText c : circleViews) {
             c.clearFocus();
             c.setCursorVisible(false);
         }
+
+        // 2. LOCK WINDOWS (Fixes the dragging issue)
+        setWindowsTouchable(false);
 
         Map<Character, PointF> letterMap = new HashMap<>();
         StringBuilder inputLetters = new StringBuilder();
@@ -217,7 +233,6 @@ public class OverlayService extends Service {
             if (!txt.isEmpty()) {
                 char c = txt.charAt(0);
                 inputLetters.append(c);
-                
                 WindowManager.LayoutParams params = (WindowManager.LayoutParams) circle.getLayoutParams();
                 float centerX = params.x + (CIRCLE_SIZE / 2f);
                 float centerY = params.y + (CIRCLE_SIZE / 2f);
@@ -227,17 +242,15 @@ public class OverlayService extends Service {
 
         if (inputLetters.length() < 3) {
             Toast.makeText(this, "Need 3+ letters", Toast.LENGTH_SHORT).show();
-            isSolving = false;
-            updateUIState(false);
+            stopSolving(); // Make sure to unlock if failing
             return;
         }
 
         new Thread(() -> {
             List<String> words = trie.solve(inputLetters.toString());
             
-            // Show toast to confirm dictionary works
             new Handler(Looper.getMainLooper()).post(() -> 
-                Toast.makeText(this, "Found " + words.size() + " words. Swiping...", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Found " + words.size() + " words.", Toast.LENGTH_SHORT).show()
             );
             
             for (String word : words) {
@@ -254,12 +267,10 @@ public class OverlayService extends Service {
                 }
 
                 SwiperService.instance.swipe(path);
-                try { Thread.sleep(800); } catch (InterruptedException e) {} // Slower for reliability
+                try { Thread.sleep(600); } catch (InterruptedException e) {}
             }
             
-            // Done loop
-            isSolving = false;
-            updateUIState(false);
+            stopSolving();
         }).start();
     }
 
@@ -267,7 +278,8 @@ public class OverlayService extends Service {
         isSolving = false;
         if (SwiperService.instance != null) SwiperService.instance.stopSwiping();
         updateUIState(false);
-        Toast.makeText(this, "Stopped", Toast.LENGTH_SHORT).show();
+        // UNLOCK WINDOWS (Make interactive again)
+        setWindowsTouchable(true);
     }
 
     @Override
