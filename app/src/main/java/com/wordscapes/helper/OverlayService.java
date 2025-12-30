@@ -25,6 +25,7 @@ public class OverlayService extends Service {
     private final List<EditText> circleViews = new ArrayList<>();
     private TextView btnPlay;
     private boolean isSolving = false;
+    private Random random = new Random();
     
     private static final int CIRCLE_SIZE = 130;
 
@@ -180,10 +181,8 @@ public class OverlayService extends Service {
                 WindowManager.LayoutParams params = (WindowManager.LayoutParams) circle.getLayoutParams();
                 if (touchable) {
                     params.flags = WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL;
-                    circle.setAlpha(1.0f);
                 } else {
                     params.flags = WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE | WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE;
-                    circle.setAlpha(0.7f);
                 }
                 wm.updateViewLayout(circle, params);
             }
@@ -212,10 +211,6 @@ public class OverlayService extends Service {
         updateUIState(true);
         SwiperService.instance.reset();
 
-        for (EditText c : circleViews) {
-            c.clearFocus();
-            c.setCursorVisible(false);
-        }
         setWindowsTouchable(false);
 
         List<Tile> boardTiles = new ArrayList<>();
@@ -226,48 +221,37 @@ public class OverlayService extends Service {
             if (!txt.isEmpty()) {
                 char c = txt.charAt(0);
                 inputLetters.append(c);
-                
-                // ACCURACY FIX: Use Absolute Screen Coordinates instead of Window Layout Params
                 int[] screenLocation = new int[2];
                 circle.getLocationOnScreen(screenLocation);
-                
-                // Calculate TRUE CENTER including Status Bar offsets
-                float centerX = screenLocation[0] + (circle.getWidth() / 2.0f);
-                float centerY = screenLocation[1] + (circle.getHeight() / 2.0f);
-                
-                boardTiles.add(new Tile(c, centerX, centerY));
+                boardTiles.add(new Tile(c, screenLocation[0] + (circle.getWidth() / 2.0f), screenLocation[1] + (circle.getHeight() / 2.0f)));
             }
         }
 
-        if (inputLetters.length() < 3) {
-            Toast.makeText(this, "Need 3+ letters", Toast.LENGTH_SHORT).show();
-            stopSolving();
-            return;
-        }
-
         new Thread(() -> {
+            // 1. Get words from Trie
             List<String> rawWords = trie.solve(inputLetters.toString());
+            
+            // 2. LOGIC UPDATE: Remove words shorter than 3 letters
+            rawWords.removeIf(w -> w.length() < 3);
+
+            // 3. LOGIC UPDATE: Sort Longest -> Shortest
+            Collections.sort(rawWords, (a, b) -> b.length() - a.length());
+
             List<String> validWords = new ArrayList<>();
             for (String word : rawWords) {
                 if (canMakeWord(word, boardTiles)) validWords.add(word);
             }
             
-            new Handler(Looper.getMainLooper()).post(() -> 
-                Toast.makeText(this, "Solving " + validWords.size() + " words", Toast.LENGTH_SHORT).show()
-            );
-
             for (String word : validWords) {
                 if (!isSolving) break;
                 float[][] path = buildPathForWord(word, boardTiles);
                 if (path != null) {
                     SwiperService.instance.swipe(path);
                     
-                    // SMART DELAY LOGIC:
-                    // 1. Calculate how long the swipe technically takes (100ms per letter)
-                    long gestureDuration = Math.max(200, word.length() * 100);
-                    
-                    // 2. Wait for gesture to finish + User Requested 300ms Delay
-                    try { Thread.sleep(gestureDuration + 300); } catch (InterruptedException e) {}
+                    // Keep the human jitter (250-550ms) to stay safe
+                    long jitter = 250 + random.nextInt(300);
+                    long duration = Math.max(200, word.length() * 100);
+                    try { Thread.sleep(duration + jitter); } catch (InterruptedException e) {}
                 }
             }
             stopSolving();
